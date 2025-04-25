@@ -1,0 +1,101 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Template for the FruitBasket Application
+
+Resources:
+
+  FruitBasketDynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: FruitBasket
+      AttributeDefinitions:
+        - AttributeName: FruitId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: FruitId
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  FruitBasketLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaDynamoDBPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:Scan
+                Resource: !GetAtt FruitBasketDynamoDBTable.Arn
+
+  FruitBasketAddFruitFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: AddFruitFunction
+      Handler: index.handler
+      Role: !GetAtt FruitBasketLambdaExecutionRole.Arn
+      Runtime: nodejs18.x
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const dynamo = new AWS.DynamoDB.DocumentClient();
+          
+          exports.handler = async (event) => {
+            const item = JSON.parse(event.body);
+            const params = {
+              TableName: 'FruitBasket',
+              Item: {
+                FruitId: item.id,
+                Name: item.name,
+                Color: item.color
+              }
+            };
+            await dynamo.put(params).promise();
+            
+            return {
+              statusCode: 200,
+              body: JSON.stringify({ message: 'Fruit added!' })
+            };
+          };
+
+  FruitBasketApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: FruitBasketApi
+      Description: API for managing fruits in the FruitBasket app
+
+  FruitBasketApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt FruitBasketApiGateway.RootResourceId
+      PathPart: fruit
+      RestApiId: !Ref FruitBasketApiGateway
+
+  FruitBasketApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FruitBasketApiGateway
+      ResourceId: !Ref FruitBasketApiGatewayResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - { LambdaArn: !GetAtt FruitBasketAddFruitFunction.Arn }
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref FruitBasketAddFruitFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
